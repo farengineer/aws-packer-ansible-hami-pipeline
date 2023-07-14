@@ -1,0 +1,254 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: EC2 with user data to install Packer and Ansible for CIS 1 AMI creation. Will create the initial EC2 instance Packer and Ansible will do work on, a Security group for internal SG SSHing and 443 egress for SSM, and an IAM Role and Instance Profile with required permissions.
+
+Parameters:
+  VpcId:
+    Description: "Specify the VPC ID the stack will be deployed to."
+    Type: String
+  SubnetId:
+    Description: "Specify a private Subnet ID that has outbound internet access for the SSM."
+    Type: String
+  S3Bucket:
+    Description: "Specify an S3 bucket name that contains the needed pkr.hcl configuration files in a .zip. Root level in bucket and .zip."
+    Type: String
+  AmiID:
+    Type: AWS::SSM::Parameter::Value<AWS::EC2::Image::Id>
+    Description: "The ID of the most recent AL2 AMI."
+    Default: /aws/service/ami-amazon-linux-latest/amzn2-ami-hvm-x86_64-gp2
+
+Resources:
+  PackerInstance:
+    Type: AWS::EC2::Instance
+    DependsOn: PackerIAMInstanceProfile
+    Properties:
+      ImageId:
+        Ref: AmiID
+      InstanceType: t2.medium
+      IamInstanceProfile:
+        Ref: PackerIAMInstanceProfile
+      SecurityGroupIds:
+        - !GetAtt PackerSecurityGroup.GroupId
+      SubnetId:
+        Ref: SubnetId
+      UserData:
+        Fn::Base64: !Sub |
+          #!/bin/bash -xe
+
+          sudo yum update -y;
+          sudo yum upgrade -y;
+
+          sudo yum install -y yum-utils;
+          sudo yum-config-manager --add-repo https://rpm.releases.hashicorp.com/AmazonLinux/hashicorp.repo;
+          sudo yum install packer -y;
+          sudo yum install python-pip -y;
+          sudo yum install python3-jinja2 -y;
+          sudo pip3 install Jinja2;
+          sudo pip3 install --upgrade Jinja2;
+          sudo pip2 install Jinja2;
+          sudo pip2 install --upgrade Jinja2;
+
+          sudo runuser -l ec2-user -c "pip3 install jmespath";
+          sudo runuser -l ec2-user -c "python3 -m pip install ansible";
+
+          sudo runuser -l ec2-user -c "ansible localhost -a 'python --version' -e 'ansible_python_interpreter=/usr/bin/python3' -vvv";
+          sudo runuser -l ec2-user -c "ansible-galaxy collection install community.general";
+
+          sudo runuser -l ec2-user -c 'mkdir /tmp/packer';
+
+          sudo runuser -l ec2-user -c 'wget -O /tmp/packer/al2_cis_1.zip    https://github.com/ansible-lockdown/AMAZON2-CIS/archive/refs/heads/devel.zip';
+          sudo runuser -l ec2-user -c 'wget -O /tmp/packer/ws2016_cis_1.zip https://github.com/ansible-lockdown/Windows-2016-CIS/archive/refs/heads/devel.zip';
+          sudo runuser -l ec2-user -c 'wget -O /tmp/packer/ws2022_cis_1.zip https://github.com/ansible-lockdown/Windows-2022-CIS/archive/refs/heads/devel.zip';
+          sudo runuser -l ec2-user -c 'wget -O /tmp/packer/ubuntu_cis_1.zip https://github.com/ansible-lockdown/UBUNTU20-CIS/archive/refs/heads/devel.zip';
+          sudo runuser -l ec2-user -c 'wget -O /tmp/packer/rhel7_cis_1.zip  https://github.com/ansible-lockdown/RHEL7-CIS/archive/refs/heads/devel.zip';
+          sudo runuser -l ec2-user -c 'wget -O /tmp/packer/rhel8_cis_1.zip  https://github.com/ansible-lockdown/RHEL8-CIS/archive/refs/heads/devel.zip';
+          sudo runuser -l ec2-user -c 'wget -O /tmp/packer/rhel9_cis_1.zip  https://github.com/ansible-lockdown/RHEL9-CIS/archive/refs/heads/devel.zip';
+
+          sudo runuser -l ec2-user -c 'unzip /tmp/packer/al2_cis_1.zip    -d /tmp/packer/al2_cis_1';
+          sudo runuser -l ec2-user -c 'unzip /tmp/packer/ws2016_cis_1.zip -d /tmp/packer/ws2016_cis_1';
+          sudo runuser -l ec2-user -c 'unzip /tmp/packer/ws2022_cis_1.zip -d /tmp/packer/ws2022_cis_1';
+          sudo runuser -l ec2-user -c 'unzip /tmp/packer/ubuntu_cis_1.zip -d /tmp/packer/ubuntu_cis_1';
+          sudo runuser -l ec2-user -c 'unzip /tmp/packer/rhel7_cis_1.zip -d  /tmp/packer/rhel7_cis_1';
+          sudo runuser -l ec2-user -c 'unzip /tmp/packer/rhel8_cis_1.zip -d  /tmp/packer/rhel8_cis_1';
+          sudo runuser -l ec2-user -c 'unzip /tmp/packer/rhel9_cis_1.zip -d  /tmp/packer/rhel9_cis_1';
+
+          sudo runuser -l ec2-user -c "sudo find /tmp/packer/rhel8_cis_1/RHEL8-CIS-devel/defaults/ -type f -exec sed -i  's/rhel8cis_rule_5_3_4: true/rhel8cis_rule_5_3_4: false/g' {} \;";
+          sudo runuser -l ec2-user -c "sudo find /tmp/packer/rhel9_cis_1/RHEL9-CIS-devel/defaults/ -type f -exec sed -i  's/rhel9cis_rule_5_3_4: true/rhel9cis_rule_5_3_4: false/g' {} \;";
+          sudo runuser -l ec2-user -c "sudo find /tmp/packer/rhel9_cis_1/RHEL9-CIS-devel/defaults/ -type f -exec sed -i  's/rhel9cis_rule_5_6_6: true/rhel9cis_rule_5_6_6: false/g' {} \;";
+          sudo runuser -l ec2-user -c "sudo find /tmp/packer/ubuntu_cis_1/UBUNTU20-CIS-devel/defaults/ -type f -exec sed -i  's/ubtu20cis_rule_1_4_2: true/ubtu20cis_rule_1_4_2: false/g' {} \;";
+          sudo runuser -l ec2-user -c "sudo find /tmp/packer/ubuntu_cis_1/UBUNTU20-CIS-devel/defaults/ -type f -exec sed -i  's/ubtu20cis_rule_1_4_4: true/ubtu20cis_rule_1_4_4: false/g' {} \;";
+
+          sudo runuser -l ec2-user -c 'aws s3api get-object --bucket ${S3Bucket} --key packer_config.zip /tmp/packer/packer_config.zip';
+
+          sudo runuser -l ec2-user -c 'unzip /tmp/packer/packer_config.zip -d /tmp/packer/';
+
+          sudo runuser -l ec2-user -c '/bin/packer init /tmp/packer/.';
+          sudo runuser -l ec2-user -c '/bin/packer build /tmp/packer/.';
+      Tags:
+        - Key: Name
+          Value: packer-hami-ec2
+
+  PackerSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupName: packer-security-group
+      GroupDescription: "Allow HTTP/HTTPS outbound for SSM. Allow SSH within the security group. DNS Outbound."
+      VpcId:
+        Ref: VpcId
+      Tags:
+        - Key: Name
+          Value: packer-hami-ec2-security-group
+ 
+  SecurityGroupIngressSSH:
+    Type: AWS::EC2::SecurityGroupIngress
+    DependsOn: PackerSecurityGroup
+    Properties:
+      GroupId: !GetAtt PackerSecurityGroup.GroupId
+      IpProtocol: tcp
+      FromPort: 22
+      ToPort: 22
+      SourceSecurityGroupId:
+        Ref: PackerSecurityGroup
+      Description: SSH to other instances in security group for Packer.
+
+  SecurityGroupIngressWINRM:
+    Type: AWS::EC2::SecurityGroupIngress
+    DependsOn: PackerSecurityGroup
+    Properties:
+      GroupId: !GetAtt PackerSecurityGroup.GroupId
+      IpProtocol: tcp
+      FromPort: 5986
+      ToPort: 5986
+      SourceSecurityGroupId:
+        Ref: PackerSecurityGroup
+      Description: WinRM to other instances in security group for Packer.
+
+  SecurityGroupEgressHTTPS:
+    Type: AWS::EC2::SecurityGroupEgress
+    DependsOn: PackerSecurityGroup
+    Properties:
+      GroupId: !GetAtt PackerSecurityGroup.GroupId
+      IpProtocol: tcp
+      FromPort: 443
+      ToPort: 443
+      CidrIp: 0.0.0.0/0
+      Description: Outbound 443 to internet for SSM connectivity.
+
+  SecurityGroupEgressHTTP:
+    Type: AWS::EC2::SecurityGroupEgress
+    DependsOn: PackerSecurityGroup
+    Properties:
+      GroupId: !GetAtt PackerSecurityGroup.GroupId
+      IpProtocol: tcp
+      FromPort: 80
+      ToPort: 80
+      CidrIp: 0.0.0.0/0
+      Description: Outbound 80 to internet for installing SSM via wget.
+
+  SecurityGroupEgressSSH:
+    Type: AWS::EC2::SecurityGroupEgress
+    DependsOn: PackerSecurityGroup
+    Properties:
+      GroupId: !GetAtt PackerSecurityGroup.GroupId
+      IpProtocol: tcp
+      FromPort: 22
+      ToPort: 22
+      DestinationSecurityGroupId: !GetAtt PackerSecurityGroup.GroupId
+      Description: SSH to other instances in security group for Packer.
+
+  SecurityGroupEgressWINRM:
+    Type: AWS::EC2::SecurityGroupEgress
+    DependsOn: PackerSecurityGroup
+    Properties:
+      GroupId: !GetAtt PackerSecurityGroup.GroupId
+      IpProtocol: tcp
+      FromPort: 5986
+      ToPort: 5986
+      SourceSecurityGroupId:
+        Ref: PackerSecurityGroup
+      Description: WinRM to other instances in security group for Packer.
+
+  PackerIAMRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - ec2.amazonaws.com
+            Action:
+              - "sts:AssumeRole"
+      Description: String
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore
+      Path: /
+      Policies:
+        - PolicyName: packer-hami-ec2-ec2-policy
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - "ec2:AttachVolume"
+                  - "ec2:AuthorizeSecurityGroupIngress"
+                  - "ec2:CopyImage"
+                  - "ec2:CreateImage"
+                  - "ec2:CreateKeypair"
+                  - "ec2:CreateSecurityGroup"
+                  - "ec2:CreateSnapshot"
+                  - "ec2:CreateTags"
+                  - "ec2:CreateVolume"
+                  - "ec2:DeleteKeyPair"
+                  - "ec2:DeleteSecurityGroup"
+                  - "ec2:DeleteSnapshot"
+                  - "ec2:DeleteVolume"
+                  - "ec2:DeregisterImage"
+                  - "ec2:Describe*"
+                  - "ec2:DetachVolume"
+                  - "ec2:EnableImageDeprecation"
+                  - "ec2:GetPasswordData"
+                  - "ec2:ModifyImageAttribute"
+                  - "ec2:ModifyInstanceAttribute"
+                  - "ec2:ModifySnapshotAttribute"
+                  - "ec2:RegisterImage"
+                  - "ec2:RunInstances"
+                  - "ec2:StopInstances"
+                  - "ec2:TerminateInstances"
+                Resource: "*"
+        - PolicyName: packer-hami-ec2-iam-policy
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - "iam:GetInstanceProfile"
+                Resource: "arn:aws:iam::*:instance-profile/packer-hami-ec2-iam-role"
+        - PolicyName: packer-hami-ec2-iam-pass-policy
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - "iam:PassRole"
+                Resource: "arn:aws:iam::*:role/packer-hami-ec2-iam-role"
+        - PolicyName: packer-hami-ec2-s3-policy
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - "s3:GetObject"
+                Resource: '*'
+      RoleName: packer-hami-ec2-iam-role
+      Tags:
+        - Key: Name
+          Value: packer-hami-ec2-iam-role
+
+  PackerIAMInstanceProfile:
+    Type: "AWS::IAM::InstanceProfile"
+    Properties:
+      InstanceProfileName: packer-hami-ec2-iam-role
+      Path: "/"
+      Roles:
+        - Ref: PackerIAMRole
